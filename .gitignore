@@ -1,0 +1,9 @@
+.DS_Store
+**/data
+**/cifar10
+**/flowers
+**/cub2011
+**/stanford_cars
+**/svhn
+**/model_checkpoints
+

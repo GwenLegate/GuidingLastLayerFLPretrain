@@ -11,9 +11,12 @@ FL Sim sets up run configurations using `config.py`, additionally we have implem
 using the command line. To see `config.py` <=> command line equivalences, see method `set_cfg_from_cl()` in `utils.py`.
  If you do not supply a command line argument, configuration will defer to the value set in `config.py`.
 
-#### &nbsp;&nbsp;Sample Run Command:
+#### &nbsp;&nbsp;Sample Run Command for FT:
 `python federated_main.py --wandb=False --epochs=100 --num_clients=10 --clients_per_round=10 --dataset=cifar --local_ep=3
---pretrained=1 --algorithm=ft --fl_algorithm=fedavg --optimizer=sgd --alpha=0.1 --client_lr=0.1`
+--pretrained=1 --ncm=0 --algorithm=ft --fl_algorithm=fedavg --optimizer=sgd --alpha=0.1 --client_lr=0.1`
+#### &nbsp;&nbsp;Sample Run Command for FedNCM+FT:
+`python federated_main.py --wandb=False --epochs=100 --num_clients=10 --clients_per_round=10 --dataset=cifar --local_ep=3
+--pretrained=1 --ncm=1 --algorithm=ft --fl_algorithm=fedavg --optimizer=sgd --alpha=0.1 --client_lr=0.1`
 
 #### &nbsp;&nbsp;wandb:
 This code base works with wandb logging, to enable it, set the appropriate command line options, or the configs in the 
@@ -39,6 +42,7 @@ wandb section of `config.py`.
 |`--epochs`            |int                               |global rounds                         |
 |`--num_clients`       |int                               |                                      |
 |`--clients_per_round` |int                               |Note: FL Sim automatically scales global rounds to client fraction (see **)|
+
 ** Round scaling: If you have 50 epochs, 10 clients and 5 clients per round you will end up running a total of (10/5)*50 
 global rounds in total. If you want to remove this behavior, the code will need to be modified appropriately.  
 

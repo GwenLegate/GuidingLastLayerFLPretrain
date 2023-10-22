@@ -19,7 +19,7 @@ using the command line. To see `config.py` <=> command line equivalences, see me
 --pretrained=1 --ncm=1 --algorithm=ft --fl_algorithm=fedavg --optimizer=sgd --alpha=0.1 --client_lr=0.001`
 
 training results for sample run command for ft (blue) and sample run command for FedNCM+FT (yellow)
-![alt text](https://github.com/GwenLegate/GuidingLastLayerFLPretrain/blob/main/images/fl_base.png?raw=true)
+![alt text](https://github.com/GwenLegate/GuidingLastLayerFLPretrain/blob/main/images/ft_base.png?raw=true)
 #### &nbsp;&nbsp;wandb:
 This code base works with wandb logging, to enable it, set the appropriate command line options, or the configs in the 
 wandb section of `config.py`.

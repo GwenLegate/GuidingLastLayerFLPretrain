@@ -18,7 +18,7 @@ using the command line. To see `config.py` <=> command line equivalences, see me
 `python federated_main.py --wandb=False --epochs=100 --num_clients=10 --clients_per_round=10 --dataset=cifar --local_ep=3
 --pretrained=1 --ncm=1 --algorithm=ft --fl_algorithm=fedavg --optimizer=sgd --alpha=0.1 --client_lr=0.001`
 
-###training results for sample run command for ft (blue) and sample run command for FedNCM+FT (yellow)
+### training results for sample run command for ft (blue) and sample run command for FedNCM+FT (yellow)
 
 ![alt text](https://github.com/GwenLegate/GuidingLastLayerFLPretrain/blob/main/images/ft_base.png?raw=true)
 #### &nbsp;&nbsp;wandb:

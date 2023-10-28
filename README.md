@@ -49,3 +49,15 @@ wandb section of `config.py`.
 
 ** Round scaling: If you have 50 epochs, 10 clients and 5 clients per round you will end up running a total of (10/5)*50 
 global rounds in total. If you want to remove this behavior, the code will need to be modified appropriately.
+
+### Citation
+If you find this work useful, please cite
+```
+@inproceedings{legate2023guiding,
+  title={Guiding The Last Layer in Federated Learning with Pre-Trained Models},
+  author={Legate, Gwen and Bernier, Nicolas and Caccia, Lucas and Oyallon, Edouard and Belilovsky, Eugene},
+booktitle = {Advances in Neural Information Processing Systems},
+ volume = {36},
+  year={2023}
+}
+```

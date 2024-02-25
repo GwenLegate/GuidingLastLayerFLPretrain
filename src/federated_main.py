@@ -25,8 +25,7 @@ from torchvision.models import squeezenet1_1, resnet18, ResNet18_Weights
 from torchvision.models.squeezenet import SqueezeNet1_1_Weights
 from sync_trainer import SyncTrainer, SyncTrainerConfig
 import os
-from utils import validata_dataset_params, build_data_provider, FLModel, MetricsReporter, wandb_setup, set_cfg_from_cl, \
-    inference
+from utils import validata_dataset_params, build_data_provider, FLModel, MetricsReporter, inference, set_cfg_from_cl, wandb_setup
 import torch.nn.functional as F
 from flsim.optimizers.server_optimizers import FedAvgWithLROptimizerConfig, FedAdamOptimizerConfig, FedAvgOptimizerConfig
 from utils import DistillBERTClassifier
@@ -50,6 +49,8 @@ def main(cfg,
         else:
             if cfg.trainer.model == 'resnet':
                 model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+            elif cfg.trainer.model == "distillbert":
+                model = DistillBERTClassifier()
             else:
                 model = squeezenet1_1(weights=SqueezeNet1_1_Weights.DEFAULT)
     else:
@@ -60,8 +61,12 @@ def main(cfg,
 
     # 4 algorithms: ft--> fine tune all, lp--> only train last layer, FedNCM--> NCM init only, FedNCM+FT--> NCM init and FT
     if 'lp' in cfg.trainer.algorithm:
-        for name, param in model.named_parameters():
-            param.requires_grad = False
+        if cfg.trainer.model == "distillbert":
+            for name, param in model.distill_bert.named_parameters():
+                    param.requires_grad = False
+        else:
+            for name, param in model.named_parameters():
+                param.requires_grad = False
 
     # replace classifier with randomly initialized classifier of appropriate size
     if cfg.trainer.model == 'resnet':
@@ -77,6 +82,7 @@ def main(cfg,
     # wandb setup
     if cfg.wandb.activate:
         run_dir = f'/scratch/{os.environ.get("USER", "glegate")}/{cfg.wandb.run_name}'
+        run_dir = './'
         if not os.path.isdir(run_dir):
             os.makedirs(run_dir, mode=0o755, exist_ok=True)
         wandb_setup(cfg)

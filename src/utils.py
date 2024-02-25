@@ -53,7 +53,7 @@ class DistillBERTClassifier(torch.nn.Module):
         pooled_output = hidden_state[:, 0]
         output = self.out(pooled_output)
         return output
-        
+
 def tokenization(example):
     return tokenizer(example["text"], padding=True, truncation=True, max_length=30)
 
@@ -73,6 +73,10 @@ def validata_dataset_params(cfg):
     elif cfg.dataset.name == 'cars':
         if cfg.dataset.num_classes != 196:
             cfg.dataset.num_classes = 196
+    elif cfg.dataset.name == 'rotten_tomatoes':
+        assert cfg.dataset.num_classes == 2, f'Number of classes for {cfg.dataset.name} is 2, got {cfg.dataset.num_classes} instead'
+    elif cfg.dataset.name == 'ag_news':
+        assert cfg.dataset.num_classes == 4, f'Number of classes for {cfg.dataset.name} is 4, got {cfg.dataset.num_classes} instead'
     else:
         raise Exception(f'{cfg.dataset.name} is not a valid dataset')
 
@@ -802,15 +806,14 @@ class MetricsReporter(FLMetricsReporter):
 
 def wandb_setup(cfg):
     if cfg.wandb.run_name:
-        os.environ['WANDB_NAME'] = cfg.wandb.run_name
-        os.environ['WANDB_START_METHOD'] = "thread"
+        os.environ['wandb_NAME'] = cfg.wandb.run_name
+        os.environ['wandb_START_METHOD'] = "thread"
     if cfg.wandb.offline:
-        os.environ["WANDB_MODE"] = "offline"
+        os.environ["wandb_MODE"] = "offline"
 
     # need to set wandb run_dir to something we can access to avoid permission denied error.
     # See https://github.com/wandb/client/issues/3437
     wandb_path = f'/scratch/{os.environ.get("USER","glegate")}/wandb'
-    #wandb_path = f'wandb'
     if not os.path.isdir(wandb_path):
         os.makedirs(wandb_path, mode=0o755, exist_ok=True)
 
@@ -906,18 +909,41 @@ def inference(model, dataloader, device):
     criterion = torch.nn.CrossEntropyLoss()
     model.eval()
     loss, total, correct = 0.0, 0.0, 0.0
-    for batch_idx, (images, labels) in enumerate(dataloader):
-        images, labels = images.to(device), labels.to(device)
-        # Inference
-        outputs = model(images)
-        batch_loss = criterion(outputs, labels)
-        loss += batch_loss.item()
 
-        # Prediction
-        _, pred_labels = torch.max(outputs, 1)
-        pred_labels = pred_labels.view(-1)
-        correct += torch.sum(torch.eq(pred_labels, labels)).item()
-        total += len(labels)
+    if isinstance(model, DistillBERTClassifier):
+        for batch_idx, batch in enumerate(dataloader):
+            data = batch["input_ids"]
+            target = batch["label"]
+            attention_mask = batch["attention_mask"]
+            data, target, mask = data.to(device), target.to(device), attention_mask.to(device)
+
+            if data.shape[0] < 64:
+                mask = mask[0:data.shape[0]]
+
+            outputs = model(data, mask=mask)
+            
+            batch_loss = criterion(outputs, target)
+            loss += batch_loss.item()
+
+            # Prediction
+            _, pred_labels = torch.max(outputs, 1)
+            pred_labels = pred_labels.view(-1)
+            correct += torch.sum(torch.eq(pred_labels, target)).item()
+            total += len(target)
+   
+    else:
+        for batch_idx, (images, labels) in enumerate(dataloader):
+            images, labels = images.to(device), labels.to(device)
+            # Inference
+            outputs = model(images)
+            batch_loss = criterion(outputs, labels)
+            loss += batch_loss.item()
+
+            # Prediction
+            _, pred_labels = torch.max(outputs, 1)
+            pred_labels = pred_labels.view(-1)
+            correct += torch.sum(torch.eq(pred_labels, labels)).item()
+            total += len(labels)
 
     accuracy = correct / total
     loss = loss / batch_idx + 1

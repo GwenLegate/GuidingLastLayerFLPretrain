@@ -26,6 +26,8 @@ from torchvision.datasets.vision import VisionDataset
 from torchvision import transforms
 from torchvision.datasets.cifar import CIFAR10
 from torchvision.datasets.flowers102 import Flowers102
+from datasets import load_dataset
+from transformers import DistilBertTokenizer, DistilBertModel
 #from torchvision.datasets.stanford_cars import StanfordCars
 from torchvision.datasets.eurosat import EuroSAT
 from femnist_dataset import FEMNIST
@@ -36,6 +38,24 @@ from dirichlet_sharder import DirichletSharder
 import random
 import wandb
 from options import args_parser
+
+tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+
+class DistillBERTClassifier(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.distill_bert = DistilBertModel.from_pretrained("distilbert-base-uncased")
+        self.out = torch.nn.Linear(768, 2)
+
+    def forward(self, ids, mask):
+        distilbert_output = self.distill_bert(ids, mask)
+        hidden_state = distilbert_output[0]
+        pooled_output = hidden_state[:, 0]
+        output = self.out(pooled_output)
+        return output
+
+def tokenization(example):
+    return tokenizer(example["text"], padding=True, truncation=True, max_length=30)
 
 def validata_dataset_params(cfg):
     if cfg.dataset.name == 'femnist':
@@ -53,14 +73,26 @@ def validata_dataset_params(cfg):
     elif cfg.dataset.name == 'cars':
         if cfg.dataset.num_classes != 196:
             cfg.dataset.num_classes = 196
+    elif cfg.dataset.name == 'rotten_tomatoes':
+        assert cfg.dataset.num_classes == 2, f'Number of classes for {cfg.dataset.name} is 2, got {cfg.dataset.num_classes} instead'
+    elif cfg.dataset.name == 'ag_news':
+        assert cfg.dataset.num_classes == 4, f'Number of classes for {cfg.dataset.name} is 4, got {cfg.dataset.num_classes} instead'
     else:
         raise Exception(f'{cfg.dataset.name} is not a valid dataset')
 
 
 def collate_fn(batch: Tuple) -> Dict[str, Any]:
-    feature, label = batch
-    return {"features": feature, "labels": label}
+    try:
+        # HF dataset
+        feature = batch['input_ids']
+        label = batch['label']
+        mask = batch['attention_mask']
 
+        return {"features": feature, "labels": label, 'attention_mask': mask}
+    except:
+        feature, label = batch
+        return {"features": feature, "labels": label, 'attention_mask': None}
+    
 
 class DataLoader(IFLDataLoader):
     SEED = 2137
@@ -134,7 +166,10 @@ class UserData(IFLUserData):
 
         user_features = list(user_data["features"])
         user_labels = list(user_data["labels"])
-        
+        try:
+            user_masks = list(user_data["attention_mask"])
+        except: 
+            user_masks = None
         self.user_labels = user_labels
         total = sum(len(batch) for batch in user_labels)
 
@@ -142,11 +177,11 @@ class UserData(IFLUserData):
             if self._num_eval_examples < int(total * self._eval_split):
                 self._num_eval_batches += 1
                 self._num_eval_examples += UserData.get_num_examples(labels)
-                self._eval_batches.append(UserData.fl_training_batch(features, labels))
+                self._eval_batches.append(UserData.fl_training_batch(features, labels, user_masks))
             else:
                 self._num_train_batches += 1
                 self._num_train_examples += UserData.get_num_examples(labels)
-                self._train_batches.append(UserData.fl_training_batch(features, labels))
+                self._train_batches.append(UserData.fl_training_batch(features, labels, user_masks))
 
     def num_train_examples(self) -> int:
         """
@@ -192,9 +227,9 @@ class UserData(IFLUserData):
 
     @staticmethod
     def fl_training_batch(
-        features: List[torch.Tensor], labels: List[float]
+        features: List[torch.Tensor], labels: List[float], user_masks: List[torch.Tensor]=None
     ) -> Dict[str, torch.Tensor]:
-        return {"features": torch.stack(features), "labels": torch.Tensor(labels)}
+        return {"features": torch.stack(features), "labels": torch.Tensor(labels), "attention_mask": user_masks}
 
 
 class LEAFDataLoader(IFLDataLoader):
@@ -517,6 +552,27 @@ def build_data_provider(local_batch_size, num_clients, dataset, num_classes, alp
             root="../data/cifar10/", train=True, download=True, transform=train_transform)
         test_dataset = CIFAR10(
             root="../data/cifar10/", train=False, download=True, transform=test_transform)
+    elif dataset == 'rotten_tomatoes':
+
+        dataset = load_dataset("rotten_tomatoes", split="train")
+        dataset = dataset.map(tokenization, batched=True)
+        dataset.set_format(type="torch", columns=['text', 'label', 'input_ids', 'attention_mask'])
+        dataset.format['type']
+        
+        split_dataset = dataset.train_test_split(test_size=0.3)
+        train_dataset = split_dataset['train']
+        test_dataset = split_dataset['test']
+
+    elif dataset == 'ag_news':
+        dataset_size = 8400
+        dataset = load_dataset("ag_news", split=f"train[:{dataset_size}]")
+        dataset = dataset.map(tokenization, batched=True)
+        dataset.set_format(type="torch", columns=['text', 'label', 'input_ids', 'attention_mask'])
+        dataset.format['type']
+
+        split_dataset = dataset.train_test_split(test_size=0.3)
+        train_dataset = split_dataset['train']
+        test_dataset = split_dataset['test']
 
     else:
         raise Exception(f'{dataset} is not a valid dataset')
@@ -589,21 +645,38 @@ class FLModel(IFLModel):
     def fl_forward(self, batch, user_labels = None) -> FLBatchMetrics:
         features = batch["features"]  # [B, C, 28, 28]
         batch_label = batch["labels"]
+        batch_mask = batch["attention_mask"]
+        batch_mask = torch.stack(batch_mask[0], dim=0).to(self.device)
+
         stacked_label = batch_label.view(-1).long().clone().detach()
+
         if self.device is not None:
             features = features.to(self.device)
 
-        output = self.model(features)
+        if batch_mask is not None:
+            if features.shape[0] < 64:
+                batch_mask = batch_mask[0:features.shape[0]]
+
+            output = self.model(features, mask=batch_mask)
+        else:
+            output = self.model(features)
 
         if user_labels:
             wsm_logits = self.weighted_log_softmax(output, user_labels).to(self.device)
 
         if self.device is not None:
-            output, batch_label, stacked_label = (
-                output.to(self.device),
-                batch_label.to(self.device),
-                stacked_label.to(self.device),
-            )
+            try:
+                output, batch_label, stacked_label = (
+                    output.to(self.device),
+                    batch_label.to(self.device),
+                    stacked_label.to(self.device),
+                )
+            except:
+                output, batch_label, stacked_label = (
+                    output.logits.to(self.device),
+                    batch_label.to(self.device),
+                    stacked_label.to(self.device),
+                )
 
         if user_labels:
             loss = torch.nn.functional.nll_loss(wsm_logits, stacked_label)
@@ -733,15 +806,14 @@ class MetricsReporter(FLMetricsReporter):
 
 def wandb_setup(cfg):
     if cfg.wandb.run_name:
-        os.environ['WANDB_NAME'] = cfg.wandb.run_name
-        os.environ['WANDB_START_METHOD'] = "thread"
+        os.environ['wandb_NAME'] = cfg.wandb.run_name
+        os.environ['wandb_START_METHOD'] = "thread"
     if cfg.wandb.offline:
-        os.environ["WANDB_MODE"] = "offline"
+        os.environ["wandb_MODE"] = "offline"
 
     # need to set wandb run_dir to something we can access to avoid permission denied error.
     # See https://github.com/wandb/client/issues/3437
     wandb_path = f'/scratch/{os.environ.get("USER","glegate")}/wandb'
-    #wandb_path = f'wandb'
     if not os.path.isdir(wandb_path):
         os.makedirs(wandb_path, mode=0o755, exist_ok=True)
 
@@ -837,18 +909,41 @@ def inference(model, dataloader, device):
     criterion = torch.nn.CrossEntropyLoss()
     model.eval()
     loss, total, correct = 0.0, 0.0, 0.0
-    for batch_idx, (images, labels) in enumerate(dataloader):
-        images, labels = images.to(device), labels.to(device)
-        # Inference
-        outputs = model(images)
-        batch_loss = criterion(outputs, labels)
-        loss += batch_loss.item()
 
-        # Prediction
-        _, pred_labels = torch.max(outputs, 1)
-        pred_labels = pred_labels.view(-1)
-        correct += torch.sum(torch.eq(pred_labels, labels)).item()
-        total += len(labels)
+    if isinstance(model, DistillBERTClassifier):
+        for batch_idx, batch in enumerate(dataloader):
+            data = batch["input_ids"]
+            target = batch["label"]
+            attention_mask = batch["attention_mask"]
+            data, target, mask = data.to(device), target.to(device), attention_mask.to(device)
+
+            if data.shape[0] < 64:
+                mask = mask[0:data.shape[0]]
+
+            outputs = model(data, mask=mask)
+            
+            batch_loss = criterion(outputs, target)
+            loss += batch_loss.item()
+
+            # Prediction
+            _, pred_labels = torch.max(outputs, 1)
+            pred_labels = pred_labels.view(-1)
+            correct += torch.sum(torch.eq(pred_labels, target)).item()
+            total += len(target)
+   
+    else:
+        for batch_idx, (images, labels) in enumerate(dataloader):
+            images, labels = images.to(device), labels.to(device)
+            # Inference
+            outputs = model(images)
+            batch_loss = criterion(outputs, labels)
+            loss += batch_loss.item()
+
+            # Prediction
+            _, pred_labels = torch.max(outputs, 1)
+            pred_labels = pred_labels.view(-1)
+            correct += torch.sum(torch.eq(pred_labels, labels)).item()
+            total += len(labels)
 
     accuracy = correct / total
     loss = loss / batch_idx + 1

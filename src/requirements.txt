@@ -11,3 +11,5 @@ setuptools
 tqdm
 tensorboard
 torchvision
+dataset
+transformers

@@ -25,11 +25,10 @@ from torchvision.models import squeezenet1_1, resnet18, ResNet18_Weights
 from torchvision.models.squeezenet import SqueezeNet1_1_Weights
 from sync_trainer import SyncTrainer, SyncTrainerConfig
 import os
-from utils import validata_dataset_params, build_data_provider, FLModel, MetricsReporter, wandb_setup, set_cfg_from_cl, \
-    inference
+from utils import validata_dataset_params, build_data_provider, FLModel, MetricsReporter, inference, set_cfg_from_cl, wandb_setup
 import torch.nn.functional as F
 from flsim.optimizers.server_optimizers import FedAvgWithLROptimizerConfig, FedAdamOptimizerConfig, FedAvgOptimizerConfig
-
+from utils import DistillBERTClassifier
 
 def main(cfg,
     use_cuda_if_available: bool = True,
@@ -42,12 +41,16 @@ def main(cfg,
             if cfg.trainer.model == 'resnet':
                 model = resnet18()
                 model.load_state_dict(torch.load("./models/pretrained_resnet.pt"))
+            elif cfg.trainer.model == "distillbert":
+                model = DistillBERTClassifier()
             else:
                 model = squeezenet1_1()
                 model.load_state_dict(torch.load("./models/pretrained_squeeze.pt"))
         else:
             if cfg.trainer.model == 'resnet':
                 model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+            elif cfg.trainer.model == "distillbert":
+                model = DistillBERTClassifier()
             else:
                 model = squeezenet1_1(weights=SqueezeNet1_1_Weights.DEFAULT)
     else:
@@ -58,8 +61,12 @@ def main(cfg,
 
     # 4 algorithms: ft--> fine tune all, lp--> only train last layer, FedNCM--> NCM init only, FedNCM+FT--> NCM init and FT
     if 'lp' in cfg.trainer.algorithm:
-        for name, param in model.named_parameters():
-            param.requires_grad = False
+        if cfg.trainer.model == "distillbert":
+            for name, param in model.distill_bert.named_parameters():
+                    param.requires_grad = False
+        else:
+            for name, param in model.named_parameters():
+                param.requires_grad = False
 
     # replace classifier with randomly initialized classifier of appropriate size
     if cfg.trainer.model == 'resnet':
@@ -75,6 +82,7 @@ def main(cfg,
     # wandb setup
     if cfg.wandb.activate:
         run_dir = f'/scratch/{os.environ.get("USER", "glegate")}/{cfg.wandb.run_name}'
+        run_dir = './'
         if not os.path.isdir(run_dir):
             os.makedirs(run_dir, mode=0o755, exist_ok=True)
         wandb_setup(cfg)
@@ -100,24 +108,94 @@ def main(cfg,
 
     # NCM initialization
     if cfg.trainer.ncm_init:
-        class_sums = torch.zeros((cfg.dataset.num_classes, 512)).to(device)
-        class_count = torch.zeros(cfg.dataset.num_classes).to(device)
-        for batch_idx, (data, target) in enumerate(trainloader):
-            data, target = data.to(device), target.to(device)
-            if cfg.trainer.model == 'resnet':
-                features = torch.nn.Sequential(*list(global_model.model.children())[:-1])(data)
-            else:
-                features = global_model.model.features(data)
-            features = F.adaptive_avg_pool2d(features, 1).squeeze()
+        
+        if cfg.trainer.model == "distillbert" and cfg.dataset.name == "rotten_tomatoes":
+            class_sums = torch.zeros((2,768)).to(device)
 
-            for i, t in enumerate(target):
-                class_sums[t] += features[i].data.squeeze()
-                class_count[t] += 1
-        class_means = torch.div(class_sums, torch.reshape(class_count, (-1, 1)))
-        if cfg.trainer.model == 'resnet':
-            global_model.model.fc.weight.data = torch.nn.functional.normalize(class_means)
+            labels_one = 0
+            labels_zero = 0
+
+            for batch_idx, dataset in enumerate(trainloader):
+                data = dataset['input_ids']
+                target = dataset['label']
+
+                attention_mask = dataset['attention_mask']
+                data, target, mask = data.to(device), target.to(device), attention_mask.to(device)
+                distilbert_output = model.distill_bert(data, mask)
+                hidden_state = distilbert_output[0] # Batch x Tokens x Feature
+                features = hidden_state[:, 0] # Batch x Feature -> by taking 1 token, alternative, 
+
+                target_list = target.tolist()
+                one = target_list.count(1)
+                zero = target_list.count(0)
+                labels_one += one
+                labels_zero += zero
+
+                for i,t in enumerate(target):
+                    class_sums[t]+=features[i].data.squeeze()
+
+            class_sums[0] = class_sums[0]/labels_zero
+            class_sums[1] = class_sums[1]/labels_one
+            class_means = class_sums
+
+            model.out.weight.data = torch.nn.functional.normalize(class_means)
+        elif cfg.trainer.model == "distillbert" and cfg.dataset.name == "ag_news":
+            class_sums = torch.zeros((4,768)).to(device)
+
+            labels_zero = 0
+            labels_one = 0
+            labels_two = 0
+            labels_three = 0
+
+            for batch_idx, dataset in enumerate(trainloader):
+                data = dataset['input_ids']
+                target = dataset['label']
+
+                attention_mask = dataset['attention_mask']
+                data, target, mask = data.to(device), target.to(device), attention_mask.to(device)
+                distilbert_output = model.distill_bert(data, mask)
+                hidden_state = distilbert_output[0] # Batch x Tokens x Feature
+                features = hidden_state[:, 0] # Batch x Feature -> by taking 1 token, alternative, 
+
+                target_list = target.tolist()
+                zero = target_list.count(0)
+                one = target_list.count(1)
+                two = target_list.count(2)
+                three = target_list.count(3)
+                labels_one += one
+                labels_zero += zero
+                labels_two += two
+                labels_three += three
+
+                for i,t in enumerate(target):
+                    class_sums[t]+=features[i].data.squeeze()
+
+            class_sums[0] = class_sums[0]/labels_zero
+            class_sums[1] = class_sums[1]/labels_one
+            class_sums[2] = class_sums[2]/labels_two
+            class_sums[3] = class_sums[3]/labels_three
+            class_means = class_sums
+
+            model.out.weight.data = torch.nn.functional.normalize(class_means)
         else:
-            global_model.model.classifier[2].weight.data = torch.nn.functional.normalize(class_means)
+            class_sums = torch.zeros((cfg.dataset.num_classes, 512)).to(device)
+            class_count = torch.zeros(cfg.dataset.num_classes).to(device)
+            for batch_idx, (data, target) in enumerate(trainloader):
+                data, target = data.to(device), target.to(device)
+                if cfg.trainer.model == 'resnet':
+                    features = torch.nn.Sequential(*list(global_model.model.children())[:-1])(data)
+                else:
+                    features = global_model.model.features(data)
+                features = F.adaptive_avg_pool2d(features, 1).squeeze()
+
+                for i, t in enumerate(target):
+                    class_sums[t] += features[i].data.squeeze()
+                    class_count[t] += 1
+            class_means = torch.div(class_sums, torch.reshape(class_count, (-1, 1)))
+            if cfg.trainer.model == 'resnet':
+                global_model.model.fc.weight.data = torch.nn.functional.normalize(class_means)
+            else:
+                global_model.model.classifier[2].weight.data = torch.nn.functional.normalize(class_means)
 
     '''# save init checkpoint
     cp = global_model().model.state_dict()

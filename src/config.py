@@ -1,7 +1,7 @@
 json_config = {
     "dataset":{
-        "name": "flowers",
-        "num_classes": 102,
+        "name": "rotten_tomatoes",
+        "num_classes": 2,
         "alpha": 0.1,
         "num_client_samples": None,
     },
@@ -46,7 +46,7 @@ json_config = {
              }
         },
         # model to use
-        "model": 'squeezenet',
+        "model": 'distillbert',
         # total clients
         "total_users": 10,
         # number of users per round for aggregation
